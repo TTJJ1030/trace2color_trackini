@@ -1,0 +1,75 @@
+# Radar parameters
+radar:
+  max_range: 500000        # meters (500 km)
+  min_range: 5000          # meters
+  scan_time: 6.0           # seconds per scan
+  range_resolution: 500    # meters per range bin
+  azimuth_resolution: 0.5  # degrees per azimuth bin
+
+# Simulation parameters
+simulation:
+  n_frames: 20             # total frames to simulate
+  n_targets: 7             # number of targets
+  target_speed_min: 50     # m/s
+  target_speed_max: 300    # m/s
+  pd: 0.85                 # detection probability
+  sigma_r: 100.0           # range measurement noise (m)
+  sigma_az: 0.2            # azimuth measurement noise (degrees)
+  clutter_lambda: 800      # mean clutter points per frame (Poisson)
+  clutter_snr_shape: 0.5   # K-distribution shape parameter
+  clutter_snr_scale: 5.0   # K-distribution scale parameter
+  target_snr_mean: 20.0    # mean target SNR (dB)
+  target_snr_std: 5.0      # target SNR std (dB)
+  seed: 42
+
+# Pixelization parameters
+pixelization:
+  mode: fixed              # fixed or adaptive
+  n_range_bins: 200        # grid cells in range
+  n_azimuth_bins: 360      # grid cells in azimuth
+  frames_per_triplet: 3    # frames per RGB triplet
+
+# Layering parameters
+layering:
+  n_channels: 8
+  snr_threshold: 10.0      # dB, initial quality threshold
+
+# Block sliding parameters
+block_sliding:
+  p_frames: 5              # sliding window length (frames)
+  v_max: 300               # m/s max target speed
+  overlap_ratio: 0.5       # overlap fraction
+  n_az_sectors: 12         # number of azimuth sectors
+
+# Clutter analysis
+clutter_analysis:
+  batch_size: 3            # frames per batch
+  n_range_bins_hist: 40
+  n_az_bins_hist: 40
+
+# Model parameters
+model:
+  patch_size: 64           # spatial size of input patches
+  n_channels: 8
+  learning_rate: 0.001
+  batch_size: 32
+  n_epochs: 20
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  conf_threshold: 0.6      # DL confidence threshold for track initiation
+
+# Track initiation (QASH)
+track_initiation:
+  conf_threshold: 0.6
+  v_max: 350.0             # m/s
+  v_resolution: 5.0        # m/s bin size in Hough space
+  hough_threshold: 0.3     # normalized Hough peak threshold
+  gate_distance: 2000.0    # m gating distance
+  m_of_n_hits: 3           # required hits
+  n_frames_window: 5       # window length
+
+# Output
+output:
+  dir: outputs
+  dpi: 150
+  format: png
