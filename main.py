@@ -25,10 +25,10 @@ from src.clutter_analysis import ClutterAnalyzer
 from src.model import CBAMUNet
 from src.track_initiation import QASHTrackInitiator, compute_gospa
 from src.visualization import (
-    plot_3d_scatter, plot_polar_raw, plot_pixelized_image,
-    plot_layer_tensor, plot_sector_windows, plot_clutter_histograms,
-    plot_track_initiation_results, plot_classification_metrics,
-    plot_snr_distributions,
+    plot_2d_polar_traces, plot_3d_scatter, plot_polar_raw, plot_pixelized_image,
+    plot_enhanced_pixelization, plot_layer_tensor, plot_sector_windows,
+    plot_clutter_histograms, plot_track_initiation_results,
+    plot_classification_metrics, plot_snr_distributions,
 )
 
 
@@ -71,10 +71,11 @@ def run_pipeline(config: dict, use_dl: bool = False,
     print(f"  Frames: {n_frames}, Targets: {n_targets}, Clutter: {n_clutter}")
 
     # =========================================================
-    # Fig A: 3D scatter plot
+    # Fig A: 2D polar multi-frame traces
     # =========================================================
-    print("\nGenerating Fig A: 3D point trace scatter...")
-    plot_3d_scatter(points, f'{out_dir}/fig_A_3d_scatter.png', dpi=dpi, n_frames=n_frames)
+    print("\nGenerating Fig A: 2D polar point trace plot...")
+    plot_2d_polar_traces(points, f'{out_dir}/fig_A_2d_polar_traces.png',
+                         dpi=dpi, n_frames=n_frames)
 
     # =========================================================
     # Fig B: Raw polar plots per batch
@@ -96,7 +97,7 @@ def run_pipeline(config: dict, use_dl: bool = False,
     print(f"  Pixelized image shape: {rgb_triplet_0.shape}")
 
     # =========================================================
-    # Fig C: Pixelized RGB images
+    # Fig C: Pixelized RGB images (standard + enhanced)
     # =========================================================
     print("Generating Fig C: Pixelized RGB images...")
     plot_pixelized_image(rgb_triplet_0, f'{out_dir}/fig_C_pixelized_triplet0.png',
@@ -104,11 +105,18 @@ def run_pipeline(config: dict, use_dl: bool = False,
     plot_pixelized_image(rgb_triplet_1, f'{out_dir}/fig_C_pixelized_triplet1.png',
                          1, 2, 3, dpi=dpi)
 
+    # Enhanced pixelization: persistence + temporal centroid
+    print("Generating Fig C2: Enhanced pixelization...")
+    enh0 = pixelizer.pixelize_triplet_enhanced(points, 0, 1, 2)
+    plot_enhanced_pixelization(
+        enh0['rgb'], enh0['persistence'], enh0['temporal_centroid'],
+        f'{out_dir}/fig_C2_enhanced_pixelization.png', 0, 1, 2, dpi=dpi)
+
     # =========================================================
-    # Step 3: Layering (build 8-channel tensor)
+    # Step 3: Layering (build 10-channel MTSTE tensor)
     # =========================================================
     print("\n" + "=" * 60)
-    print("Step 3: Building 8-channel MTSTE tensors...")
+    print("Step 3: Building 10-channel MTSTE tensors...")
     layerer = Layerer(config)
     tensor_0 = layerer.build_tensor(points, 0, 1, 2)
     label_map_0 = layerer.build_label_map(points, 0, 1, 2)
@@ -265,7 +273,7 @@ def run_dl_inference(config: dict, points: np.ndarray,
     for start in range(0, n_frames - 2):
         fr, fg, fb = start, start + 1, start + 2
         tensor = layerer.build_tensor(points, fr, fg, fb)
-        tensor_t = torch.from_numpy(tensor[None]).to(device)  # [1, 8, H, W]
+        tensor_t = torch.from_numpy(tensor[None]).to(device)  # [1, 10, H, W]
 
         with torch.no_grad():
             conf_map = model.predict_confidence(tensor_t)[0].cpu().numpy()  # [H, W]

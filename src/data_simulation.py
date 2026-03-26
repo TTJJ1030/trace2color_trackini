@@ -187,7 +187,10 @@ class RadarSimulator:
         return all_points
 
     def get_true_tracks(self) -> Dict[int, np.ndarray]:
-        """Return true target trajectories as dict: target_id → [n_frames, 4] array (x,y,r,az)."""
+        """Return true target trajectories as dict: target_id → [n_frames, 2] array (range, azimuth).
+
+        Uses pure 2D polar coordinates. r=0 indicates target is out of surveillance area.
+        """
         targets = self._init_targets()
         tracks = {}
         for tgt in targets:
@@ -197,7 +200,10 @@ class RadarSimulator:
                 x = tgt.x + tgt.vx * t
                 y = tgt.y + tgt.vy * t
                 r, az = self._xy_to_polar(x, y)
-                traj.append([x, y, r, az])
+                if r < self.min_range or r > self.max_range:
+                    traj.append([0.0, 0.0])   # out of range: sentinel
+                else:
+                    traj.append([r, az])
             tracks[tgt.target_id] = np.array(traj)
         return tracks
 

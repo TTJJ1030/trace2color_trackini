@@ -3,10 +3,15 @@ Pixelization module.
 
 Converts point trace data to 2D polar grid RGB images.
 Frame triplets are mapped to R/G/B channels for temporal encoding.
+
+Enhanced version adds:
+  - Temporal persistence map (fraction of frames with any detection per cell)
+  - Temporal SNR centroid (SNR-weighted temporal centre of mass per cell)
+  - Multi-resolution option: fine grid + coarse grid for scale diversity
 """
 
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 
 class Pixelizer:
@@ -119,6 +124,84 @@ class Pixelizer:
                 'frame_b': fb,
             })
         return results
+
+    def _bin_points(self, pts: np.ndarray,
+                    range_edges: np.ndarray, az_edges: np.ndarray
+                    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Return (range_indices, azimuth_indices) for a set of points."""
+        nr = len(range_edges) - 1
+        naz = len(az_edges) - 1
+        ri = np.searchsorted(range_edges[1:], pts['range'], side='right')
+        azi = np.searchsorted(az_edges[1:], pts['azimuth'], side='right')
+        ri = np.clip(ri, 0, nr - 1)
+        azi = np.clip(azi, 0, naz - 1)
+        return ri, azi
+
+    def pixelize_triplet_enhanced(self, points: np.ndarray,
+                                   frame_r: int, frame_g: int,
+                                   frame_b: int) -> Dict[str, np.ndarray]:
+        """
+        Enhanced pixelization returning RGB, persistence, and temporal centroid maps.
+
+        Returns dict with keys:
+          'rgb'               : [H, W, 3]  colour-coded SNR image
+          'persistence'       : [H, W]     fraction of 3 frames with ≥1 detection
+          'temporal_centroid' : [H, W]     SNR-weighted temporal CoM in [0, 1]
+                                           (0 = all energy in frame_r,
+                                            1 = all energy in frame_b)
+        """
+        range_edges, az_edges = self._build_grid(points)
+        nr = len(range_edges) - 1
+        naz = len(az_edges) - 1
+
+        rgb = np.zeros((nr, naz, 3), dtype=np.float32)
+        hit_count = np.zeros((nr, naz), dtype=np.float32)   # 0–3
+        snr_weighted_t = np.zeros((nr, naz), dtype=np.float32)
+        snr_total = np.zeros((nr, naz), dtype=np.float32)
+
+        for ch_idx, (fid, t_norm) in enumerate(
+                zip([frame_r, frame_g, frame_b], [0.0, 0.5, 1.0])):
+            mask = points['frame_id'] == fid
+            pts = points[mask]
+            if len(pts) == 0:
+                continue
+            ri, azi = self._bin_points(pts, range_edges, az_edges)
+            snr_vals = np.clip(pts['snr'], 0, None)   # linear-safe
+
+            # RGB channel: max SNR per cell
+            for i, j, s in zip(ri, azi, snr_vals):
+                if s > rgb[i, j, ch_idx]:
+                    rgb[i, j, ch_idx] = float(s)
+
+            # Persistence: mark cells that received ≥1 point this frame
+            present = np.zeros((nr, naz), dtype=np.float32)
+            np.add.at(present, (ri, azi), 1.0)
+            hit_count += (present > 0).astype(np.float32)
+
+            # Temporal centroid accumulation
+            for i, j, s in zip(ri, azi, snr_vals):
+                snr_weighted_t[i, j] += s * t_norm
+                snr_total[i, j] += s
+
+        # Normalize RGB channels to [0, 1]
+        for ch in range(3):
+            ch_max = rgb[:, :, ch].max()
+            if ch_max > 0:
+                rgb[:, :, ch] /= ch_max
+
+        persistence = hit_count / 3.0   # already in [0, 1]
+
+        # Temporal centroid: avoid division by zero
+        safe_total = np.where(snr_total > 0, snr_total, 1.0)
+        temporal_centroid = np.where(snr_total > 0,
+                                     snr_weighted_t / safe_total,
+                                     0.0).astype(np.float32)
+
+        return {
+            'rgb': rgb,
+            'persistence': persistence,
+            'temporal_centroid': temporal_centroid,
+        }
 
     def pixelize_batch(self, points: np.ndarray, frame_start: int) -> np.ndarray:
         """Pixelize exactly frames [frame_start, frame_start+1, frame_start+2]."""

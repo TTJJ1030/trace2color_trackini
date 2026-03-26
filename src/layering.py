@@ -1,17 +1,21 @@
 """
 Layering module.
 
-Constructs 8-channel multi-layer tensors from point trace data and pixelized images.
+Constructs 10-channel MTSTE (Multi-layer Temporal-Spatial Tensor Encoding) from
+point trace data and enhanced pixelization outputs.
 
 Channels:
-  0: Normalized range coordinate
-  1: Normalized azimuth coordinate
-  2: Temporal marker (normalized frame index)
-  3: RGB-R (frame t)
-  4: RGB-G (frame t+1)
-  5: RGB-B (frame t+2)
-  6: SNR map (max SNR per cell, normalized)
-  7: Range span map (range extent per cell, normalized)
+  0: Normalized range coordinate (geometric prior)
+  1: Normalized azimuth coordinate (geometric prior)
+  2: Temporal marker (normalized mean frame index of triplet)
+  3: RGB-R  – max SNR of frame t  in each cell  (normalized)
+  4: RGB-G  – max SNR of frame t+1 in each cell  (normalized)
+  5: RGB-B  – max SNR of frame t+2 in each cell  (normalized)
+  6: SNR map – max SNR across all 3 frames  (normalized)
+  7: Range span map – max range extent across 3 frames  (normalized)
+  8: Temporal persistence – fraction of 3 frames with ≥1 detection per cell
+  9: Temporal SNR centroid – SNR-weighted temporal centre-of-mass in [0,1]
+     (0 = energy concentrated in frame t, 1 = in frame t+2)
 
 The quality grade (initially threshold-based, later DL-updated) is stored separately.
 """
@@ -38,7 +42,7 @@ class Layerer:
                      frame_g: int, frame_b: int,
                      quality_map: Optional[np.ndarray] = None) -> np.ndarray:
         """
-        Build 8-channel tensor for a triplet of frames.
+        Build 10-channel MTSTE tensor for a triplet of frames.
 
         Args:
             points: full point trace structured array
@@ -47,7 +51,7 @@ class Layerer:
                          uses SNR threshold
 
         Returns:
-            tensor: [8, H, W] float32
+            tensor: [10, H, W] float32
         """
         range_edges, az_edges = self.pixelizer.get_grid_edges(points)
         nr = len(range_edges) - 1
@@ -56,7 +60,7 @@ class Layerer:
         r_centers = (range_edges[:-1] + range_edges[1:]) / 2
         az_centers = (az_edges[:-1] + az_edges[1:]) / 2
 
-        tensor = np.zeros((8, nr, naz), dtype=np.float32)
+        tensor = np.zeros((10, nr, naz), dtype=np.float32)
 
         # Channel 0: normalized range coordinate
         r_norm = (r_centers - self.min_range) / (self.max_range - self.min_range)
@@ -71,17 +75,19 @@ class Layerer:
         n_frames = int(points['frame_id'].max()) + 1
         tensor[2] = mean_frame / max(n_frames - 1, 1)
 
-        # Channels 3-5: RGB from pixelization
-        rgb_image = self.pixelizer.pixelize_triplet(points, frame_r, frame_g, frame_b)
-        tensor[3] = rgb_image[:, :, 0]  # R
-        tensor[4] = rgb_image[:, :, 1]  # G
-        tensor[5] = rgb_image[:, :, 2]  # B
+        # Channels 3-5 + 8-9: use enhanced pixelization
+        enh = self.pixelizer.pixelize_triplet_enhanced(points, frame_r, frame_g, frame_b)
+        tensor[3] = enh['rgb'][:, :, 0]          # RGB-R
+        tensor[4] = enh['rgb'][:, :, 1]          # RGB-G
+        tensor[5] = enh['rgb'][:, :, 2]          # RGB-B
+        tensor[8] = enh['persistence']            # Ch 8: temporal persistence
+        tensor[9] = enh['temporal_centroid']      # Ch 9: SNR temporal centroid
 
         # Channels 6, 7: SNR map and range span map (all 3 frames combined)
         snr_map = np.zeros((nr, naz), dtype=np.float32)
         rspan_map = np.zeros((nr, naz), dtype=np.float32)
-        snr_max_global = max(points['snr'].max(), 1.0)
-        rspan_max = max(points['range_span'].max(), 1.0)
+        snr_max_global = max(float(points['snr'].max()), 1.0)
+        rspan_max = max(float(points['range_span'].max()), 1.0)
 
         for fid in [frame_r, frame_g, frame_b]:
             mask = points['frame_id'] == fid
@@ -94,9 +100,9 @@ class Layerer:
             azi = np.clip(azi, 0, naz - 1)
             for i, j, s, rs in zip(ri, azi, pts['snr'], pts['range_span']):
                 if s > snr_map[i, j]:
-                    snr_map[i, j] = s
+                    snr_map[i, j] = float(s)
                 if rs > rspan_map[i, j]:
-                    rspan_map[i, j] = rs
+                    rspan_map[i, j] = float(rs)
 
         tensor[6] = snr_map / snr_max_global
         tensor[7] = rspan_map / rspan_max
@@ -165,7 +171,7 @@ class Layerer:
         Extract overlapping patches from tensor and label map for training.
 
         Returns:
-            patches: [N, 8, patch_size, patch_size]
+            patches: [N, C, patch_size, patch_size]  (C=10 for 10-channel MTSTE)
             labels: [N, patch_size, patch_size]
         """
         C, H, W = tensor.shape

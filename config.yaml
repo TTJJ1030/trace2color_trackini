@@ -31,7 +31,7 @@ pixelization:
 
 # Layering parameters
 layering:
-  n_channels: 8
+  n_channels: 10
   snr_threshold: 10.0      # dB, initial quality threshold
 
 # Block sliding parameters
@@ -50,7 +50,7 @@ clutter_analysis:
 # Model parameters
 model:
   patch_size: 64           # spatial size of input patches
-  n_channels: 8
+  n_channels: 10
   learning_rate: 0.001
   batch_size: 32
   n_epochs: 20

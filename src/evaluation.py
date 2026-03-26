@@ -40,6 +40,34 @@ def polar_to_xy(r: float, az: float) -> Tuple[float, float]:
     return r * np.sin(az_rad), r * np.cos(az_rad)
 
 
+def _track_centroid_xy(supporting_points: list) -> list:
+    """Compute grade-weighted Cartesian centroid from supporting points."""
+    if not supporting_points:
+        return [0.0, 0.0]
+    weights = [p.get('grade', 1.0) for p in supporting_points]
+    total_w = max(sum(weights), 1e-9)
+    xs = [polar_to_xy(p['range'], p['azimuth'])[0] * w
+          for p, w in zip(supporting_points, weights)]
+    ys = [polar_to_xy(p['range'], p['azimuth'])[1] * w
+          for p, w in zip(supporting_points, weights)]
+    return [sum(xs) / total_w, sum(ys) / total_w]
+
+
+def _true_track_median_xy(traj: np.ndarray) -> list:
+    """Compute median Cartesian position across all valid frames of a true track.
+
+    traj: [n_frames, 2] array of (range, azimuth); range=0 means invalid.
+    """
+    valid = traj[:, 0] > 0
+    if not valid.any():
+        return None
+    r_vals = traj[valid, 0]
+    az_vals = traj[valid, 1]
+    xs = r_vals * np.sin(np.deg2rad(az_vals))
+    ys = r_vals * np.cos(np.deg2rad(az_vals))
+    return [float(np.median(xs)), float(np.median(ys))]
+
+
 def compute_gospa(true_tracks: Dict, initiated_tracks: List,
                   c: float = 5000.0, p: int = 2, alpha: float = 2.0) -> Tuple[float, Dict]:
     """
@@ -51,18 +79,14 @@ def compute_gospa(true_tracks: Dict, initiated_tracks: List,
 
     true_positions = []
     for tid, traj in true_tracks.items():
-        valid = traj[:, 2] > 0
-        if valid.any():
-            last_valid = traj[valid][-1]
-            x, y = polar_to_xy(last_valid[2], last_valid[3])
-            true_positions.append([x, y])
+        pos = _true_track_median_xy(traj)
+        if pos is not None:
+            true_positions.append(pos)
 
     est_positions = []
     for t in initiated_tracks:
         if t.supporting_points:
-            last_pt = sorted(t.supporting_points, key=lambda p: p['frame_id'])[-1]
-            x, y = polar_to_xy(last_pt['range'], last_pt['azimuth'])
-            est_positions.append([x, y])
+            est_positions.append(_track_centroid_xy(t.supporting_points))
 
     n_t = len(true_positions)
     n_e = len(est_positions)
@@ -108,18 +132,14 @@ def compute_ospa(true_tracks: Dict, initiated_tracks: List,
     """OSPA metric (no cardinality penalty decomposition)."""
     true_positions = []
     for tid, traj in true_tracks.items():
-        valid = traj[:, 2] > 0
-        if valid.any():
-            last_valid = traj[valid][-1]
-            x, y = polar_to_xy(last_valid[2], last_valid[3])
-            true_positions.append([x, y])
+        pos = _true_track_median_xy(traj)
+        if pos is not None:
+            true_positions.append(pos)
 
     est_positions = []
     for t in initiated_tracks:
         if t.supporting_points:
-            last_pt = sorted(t.supporting_points, key=lambda p: p['frame_id'])[-1]
-            x, y = polar_to_xy(last_pt['range'], last_pt['azimuth'])
-            est_positions.append([x, y])
+            est_positions.append(_track_centroid_xy(t.supporting_points))
 
     n_t, n_e = len(true_positions), len(est_positions)
     if n_t == 0 and n_e == 0:
@@ -161,18 +181,14 @@ def compute_tdr_ftr(true_tracks: Dict, initiated_tracks: List,
     """
     true_positions = {}
     for tid, traj in true_tracks.items():
-        valid = traj[:, 2] > 0
-        if valid.any():
-            last_valid = traj[valid][-1]
-            x, y = polar_to_xy(last_valid[2], last_valid[3])
-            true_positions[tid] = np.array([x, y])
+        pos = _true_track_median_xy(traj)
+        if pos is not None:
+            true_positions[tid] = np.array(pos)
 
     est_positions = []
     for t in initiated_tracks:
         if t.supporting_points:
-            last_pt = sorted(t.supporting_points, key=lambda p: p['frame_id'])[-1]
-            x, y = polar_to_xy(last_pt['range'], last_pt['azimuth'])
-            est_positions.append(np.array([x, y]))
+            est_positions.append(np.array(_track_centroid_xy(t.supporting_points)))
 
     n_true = len(true_positions)
     n_est = len(est_positions)
@@ -212,13 +228,13 @@ def compute_track_initiation_delay(true_tracks: Dict, initiated_tracks: List,
     true_first_frame = {}
     true_positions = {}
     for tid, traj in true_tracks.items():
-        valid = traj[:, 2] > 0
+        valid = traj[:, 0] > 0   # range > 0 means valid
         if valid.any():
-            first_valid_idx = np.where(valid)[0][0]
+            first_valid_idx = int(np.where(valid)[0][0])
             true_first_frame[tid] = first_valid_idx
-            last_valid = traj[valid][-1]
-            x, y = polar_to_xy(last_valid[2], last_valid[3])
-            true_positions[tid] = np.array([x, y])
+            pos = _true_track_median_xy(traj)
+            if pos is not None:
+                true_positions[tid] = np.array(pos)
 
     if not true_positions:
         return 0.0, 0.0
@@ -227,8 +243,8 @@ def compute_track_initiation_delay(true_tracks: Dict, initiated_tracks: List,
     for t in initiated_tracks:
         if not t.supporting_points:
             continue
-        last_pt = sorted(t.supporting_points, key=lambda p: p['frame_id'])[-1]
-        x_est, y_est = polar_to_xy(last_pt['range'], last_pt['azimuth'])
+        cx, cy = _track_centroid_xy(t.supporting_points)
+        x_est, y_est = cx, cy
 
         # Find closest true target
         min_dist = float('inf')
@@ -253,12 +269,12 @@ def compute_track_initiation_delay(true_tracks: Dict, initiated_tracks: List,
 
 def evaluate_method(method_name: str, initiated_tracks: List,
                     true_tracks: Dict, n_frames: int = 20,
-                    gospa_c: float = 5000.0) -> EvaluationResult:
+                    gospa_c: float = 50000.0) -> EvaluationResult:
     """Compute all metrics for one method."""
     gospa_val, _ = compute_gospa(true_tracks, initiated_tracks, c=gospa_c)
     ospa_val = compute_ospa(true_tracks, initiated_tracks, c=gospa_c)
-    # Association threshold: 10% of max range (generous for GOSPA scale)
-    assoc_thr = gospa_c * 4.0
+    # Association threshold: use the same cutoff distance as GOSPA c
+    assoc_thr = gospa_c
     tdr, ftr, n_detected, n_false = compute_tdr_ftr(
         true_tracks, initiated_tracks, assoc_threshold=assoc_thr, n_frames=n_frames)
     tid_mean, tid_std = compute_track_initiation_delay(

@@ -22,43 +22,74 @@ def save_fig(fig, path: str, dpi: int = 150):
     print(f"Saved: {path}")
 
 
-def plot_3d_scatter(points: np.ndarray, output_path: str, dpi: int = 150,
-                    n_frames: int = 20):
+def plot_2d_polar_traces(points: np.ndarray, output_path: str, dpi: int = 150,
+                         n_frames: int = 20):
     """
-    Fig A: 3D scatter plot of multi-frame point traces.
-    X=range, Y=azimuth, Z=frame (like Fig 5-1a).
+    Fig A: 2D polar plot of multi-frame point traces.
+    Left panel: polar plot coloured by frame index (clutter=gray, target=colour gradient).
+    Right panel: range–frame waterfall for target tracks.
     """
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7),
+                             gridspec_kw={'width_ratios': [1.2, 1]})
+    ax_polar = fig.add_subplot(121, projection='polar')
+    axes[0].remove()   # replace first slot with polar
+    ax_polar.set_theta_zero_location('N')
+    ax_polar.set_theta_direction(-1)
 
-    colors_target = cm.Reds(np.linspace(0.4, 1.0, n_frames))
-    colors_clutter = cm.Blues(np.linspace(0.2, 0.6, n_frames))
-
-    # Subsample clutter for speed
+    # Clutter – subsample
     clutter_mask = points['is_target'] == 0
-    target_mask = points['is_target'] == 1
-
-    # Random subsample clutter
-    n_clutter_show = min(3000, clutter_mask.sum())
-    clutter_idx = np.where(clutter_mask)[0]
+    target_mask  = points['is_target'] == 1
     rng = np.random.default_rng(0)
-    clutter_sample = rng.choice(clutter_idx, n_clutter_show, replace=False)
+    n_show = min(3000, clutter_mask.sum())
+    c_idx = rng.choice(np.where(clutter_mask)[0], n_show, replace=False)
+    c_pts = points[c_idx]
+    ax_polar.scatter(np.deg2rad(c_pts['azimuth']), c_pts['range'] / 1000,
+                     s=0.5, c='steelblue', alpha=0.2, label='Clutter')
 
-    c_pts = points[clutter_sample]
-    ax.scatter(c_pts['range'] / 1000, c_pts['azimuth'],
-               c_pts['frame_id'], c='steelblue', s=1, alpha=0.3, label='Clutter')
-
+    # Targets coloured by frame index
     t_pts = points[target_mask]
-    ax.scatter(t_pts['range'] / 1000, t_pts['azimuth'],
-               t_pts['frame_id'], c='red', s=20, alpha=0.9, marker='*', label='Target')
+    sc = ax_polar.scatter(np.deg2rad(t_pts['azimuth']), t_pts['range'] / 1000,
+                          c=t_pts['frame_id'], cmap='plasma', s=25, alpha=0.9,
+                          marker='*', zorder=5, label='Target')
+    cbar = plt.colorbar(sc, ax=ax_polar, shrink=0.6, pad=0.08)
+    cbar.set_label('Frame index', fontsize=9)
+    ax_polar.set_rmax(500)
+    ax_polar.set_rgrids([100, 200, 300, 400, 500])
+    ax_polar.set_title('2D Polar Point Traces\n(all frames)', fontsize=11, pad=20)
+    ax_polar.legend(loc='lower right', fontsize=8, markerscale=2)
 
-    ax.set_xlabel('Range (km)', fontsize=10)
-    ax.set_ylabel('Azimuth (°)', fontsize=10)
-    ax.set_zlabel('Frame', fontsize=10)
-    ax.set_title('Multi-frame Point Trace Data', fontsize=12)
-    ax.legend(fontsize=9)
+    # Right: range-frame waterfall
+    ax2 = axes[1]
+    frame_ids = np.arange(n_frames)
+    snr_vals_all = []
+    for fid in frame_ids:
+        mask = (points['frame_id'] == fid) & target_mask
+        snr_vals_all.append(points['snr'][mask].mean() if mask.any() else np.nan)
+
+    # Clutter density per frame
+    clutter_counts = [(points['frame_id'] == fid).sum() for fid in frame_ids]
+
+    ax2.plot(frame_ids, snr_vals_all, 'r-o', ms=4, linewidth=1.5, label='Mean target SNR')
+    ax2_twin = ax2.twinx()
+    ax2_twin.bar(frame_ids, clutter_counts, color='steelblue', alpha=0.3, label='Clutter count')
+    ax2_twin.set_ylabel('Clutter point count', fontsize=9, color='steelblue')
+    ax2.set_xlabel('Frame index', fontsize=10)
+    ax2.set_ylabel('Mean target SNR (dB)', fontsize=10, color='red')
+    ax2.set_title('Per-frame Statistics', fontsize=11)
+    ax2.grid(True, alpha=0.3)
+    lines1, labels1 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax2_twin.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, fontsize=9)
+
+    plt.suptitle('Multi-frame 2D Radar Point Trace Data', fontsize=13, y=1.01)
     plt.tight_layout()
     save_fig(fig, output_path, dpi)
+
+
+# Keep backward-compatible alias
+def plot_3d_scatter(points: np.ndarray, output_path: str, dpi: int = 150,
+                    n_frames: int = 20):
+    plot_2d_polar_traces(points, output_path, dpi=dpi, n_frames=n_frames)
 
 
 def plot_polar_raw(points: np.ndarray, output_path: str,
@@ -135,31 +166,55 @@ def plot_pixelized_image(rgb_image: np.ndarray, output_path: str,
 
 def plot_layer_tensor(tensor: np.ndarray, output_path: str, dpi: int = 150):
     """
-    Fig D: 8-channel layer tensor visualization (like Fig 5-2).
-    Shows all 8 channels in a 2×4 grid.
+    Fig D: 10-channel MTSTE tensor visualization (2×5 grid).
+
+    Ch 0: Normalized range coordinate
+    Ch 1: Normalized azimuth coordinate
+    Ch 2: Temporal marker
+    Ch 3: RGB-R (frame t)
+    Ch 4: RGB-G (frame t+1)
+    Ch 5: RGB-B (frame t+2)
+    Ch 6: SNR map
+    Ch 7: Range span map
+    Ch 8: Temporal persistence (fraction of frames with detections)
+    Ch 9: Temporal SNR centroid (SNR-weighted frame centre-of-mass)
     """
+    n_ch = tensor.shape[0]
     channel_names = [
-        'Range Coordinate', 'Azimuth Coordinate',
-        'Time Marker', 'RGB-R (Frame t)',
-        'RGB-G (Frame t+1)', 'RGB-B (Frame t+2)',
-        'SNR Map', 'Range Span Map'
-    ]
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
-    axes = axes.ravel()
+        'Range Coord', 'Azimuth Coord',
+        'Time Marker', 'RGB-R (t)',
+        'RGB-G (t+1)', 'RGB-B (t+2)',
+        'SNR Map', 'Range Span Map',
+        'Temporal Persistence', 'SNR Temporal Centroid'
+    ][:n_ch]
 
     colormaps = ['viridis', 'plasma', 'coolwarm', 'Reds',
-                 'Greens', 'Blues', 'hot', 'YlOrRd']
+                 'Greens', 'Blues', 'hot', 'YlOrRd',
+                 'magma', 'cividis'][:n_ch]
 
-    for i, (ax, name, cmap) in enumerate(zip(axes, channel_names, colormaps)):
+    ncols = 5
+    nrows = int(np.ceil(n_ch / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.5, nrows * 3.2))
+    axes = np.array(axes).ravel()
+
+    for i in range(n_ch):
+        ax = axes[i]
         ch = tensor[i]
-        im = ax.imshow(ch, aspect='auto', origin='lower', cmap=cmap,
-                       vmin=0, vmax=ch.max() if ch.max() > 0 else 1)
-        ax.set_title(f'Ch{i}: {name}', fontsize=9)
-        ax.set_xlabel('Azimuth bin', fontsize=8)
-        ax.set_ylabel('Range bin', fontsize=8)
+        vmax = ch.max() if ch.max() > 0 else 1.0
+        im = ax.imshow(ch, aspect='auto', origin='lower', cmap=colormaps[i],
+                       vmin=0, vmax=vmax)
+        ax.set_title(f'Ch{i}: {channel_names[i]}', fontsize=8, fontweight='bold')
+        ax.set_xlabel('Azimuth bin', fontsize=7)
+        ax.set_ylabel('Range bin', fontsize=7)
+        ax.tick_params(labelsize=6)
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    plt.suptitle('Multi-Layer Temporal-Spatial Tensor (MTSTE)', fontsize=13, y=1.02)
+    # Hide unused axes
+    for j in range(n_ch, len(axes)):
+        axes[j].set_visible(False)
+
+    plt.suptitle('10-Channel MTSTE: Multi-Layer Temporal-Spatial Tensor Encoding',
+                 fontsize=13, y=1.01)
     plt.tight_layout()
     save_fig(fig, output_path, dpi)
 
@@ -323,8 +378,9 @@ def plot_track_initiation_results(points: np.ndarray,
 
     true_colors = plt.cm.tab10(np.linspace(0, 1, max(len(true_tracks), 1)))
     for t_idx, (tid, traj) in enumerate(true_tracks.items()):
-        r_km = traj[:, 2] / 1000
-        az_rad = np.deg2rad(traj[:, 3])
+        # traj is [n_frames, 2]: (range_m, azimuth_deg); r=0 means invalid
+        r_km = traj[:, 0] / 1000
+        az_rad = np.deg2rad(traj[:, 1])
         valid = r_km > 0
         ax2.plot(az_rad[valid], r_km[valid], '--',
                  color=true_colors[t_idx % len(true_colors)],
@@ -398,6 +454,57 @@ def plot_classification_metrics(y_true: np.ndarray, y_pred: np.ndarray,
     print("\n=== Classification Report ===")
     print(report)
 
+    plt.tight_layout()
+    save_fig(fig, output_path, dpi)
+
+
+def plot_enhanced_pixelization(rgb_image: np.ndarray,
+                                persistence_map: np.ndarray,
+                                temporal_centroid: np.ndarray,
+                                output_path: str,
+                                frame_r: int, frame_g: int, frame_b: int,
+                                dpi: int = 150):
+    """
+    Fig C2: Enhanced pixelization showing RGB, persistence, and temporal centroid.
+    """
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+
+    ax = axes[0]
+    ax.imshow(rgb_image, aspect='auto', origin='lower')
+    ax.set_title(f'RGB Triplet\nR=f{frame_r}, G=f{frame_g}, B=f{frame_b}', fontsize=10)
+    ax.set_xlabel('Azimuth bin'); ax.set_ylabel('Range bin')
+    patches = [mpatches.Patch(color='red', label=f'Frame {frame_r}'),
+               mpatches.Patch(color='green', label=f'Frame {frame_g}'),
+               mpatches.Patch(color='blue', label=f'Frame {frame_b}')]
+    ax.legend(handles=patches, fontsize=8, loc='upper right')
+
+    ax2 = axes[1]
+    im2 = ax2.imshow(persistence_map, aspect='auto', origin='lower',
+                     cmap='YlOrRd', vmin=0, vmax=1)
+    ax2.set_title('Temporal Persistence\n(fraction of frames with detection)', fontsize=10)
+    ax2.set_xlabel('Azimuth bin'); ax2.set_ylabel('Range bin')
+    plt.colorbar(im2, ax=ax2, fraction=0.046)
+
+    ax3 = axes[2]
+    im3 = ax3.imshow(temporal_centroid, aspect='auto', origin='lower',
+                     cmap='coolwarm', vmin=0, vmax=1)
+    ax3.set_title('Temporal SNR Centroid\n(0=early, 1=late frame)', fontsize=10)
+    ax3.set_xlabel('Azimuth bin'); ax3.set_ylabel('Range bin')
+    plt.colorbar(im3, ax=ax3, fraction=0.046)
+
+    # Channel profiles
+    ax4 = axes[3]
+    ax4.plot(rgb_image[:, :, 0].mean(axis=1), 'r-', lw=1.5, label='Red (t)')
+    ax4.plot(rgb_image[:, :, 1].mean(axis=1), 'g-', lw=1.5, label='Green (t+1)')
+    ax4.plot(rgb_image[:, :, 2].mean(axis=1), 'b-', lw=1.5, label='Blue (t+2)')
+    ax4.plot(persistence_map.mean(axis=1), 'k--', lw=1.5, label='Persistence')
+    ax4.set_xlabel('Range bin', fontsize=10)
+    ax4.set_ylabel('Mean value', fontsize=10)
+    ax4.set_title('Channel Intensity Profiles', fontsize=10)
+    ax4.legend(fontsize=8)
+    ax4.grid(True, alpha=0.3)
+
+    plt.suptitle('Enhanced Multi-Resolution Pixelization', fontsize=13)
     plt.tight_layout()
     save_fig(fig, output_path, dpi)
 
